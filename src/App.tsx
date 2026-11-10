@@ -74,13 +74,48 @@ export default function App() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const galleryRef = useRef<HTMLDivElement>(null);
 
-  // 1. Fetch public achievements on mount across local, cloud backend and static storage so ALL visitors see what the owner posted!
+  const [isServerConnected, setIsServerConnected] = useState<boolean | null>(null);
+
+  // 1. Fetch public achievements on mount and poll every 5s so ALL visitors see new files in real time!
   useEffect(() => {
-    fetchAllAchievements().then((items) => {
-      if (Array.isArray(items)) {
-        setAchievements(items);
+    let isMounted = true;
+
+    const performSync = async () => {
+      try {
+        const { items, isServerConnected: connected } = await fetchAllAchievements();
+        if (!isMounted) return;
+        setIsServerConnected(connected);
+
+        setAchievements((current) => {
+          // Compare whether server has new/updated items
+          if (JSON.stringify(current) !== JSON.stringify(items)) {
+            console.log(`[Sync] Оновлено список сертифікатів (${items.length} шт.)`);
+            return items;
+          }
+          return current;
+        });
+      } catch (e) {
+        console.warn('Sync error', e);
       }
-    });
+    };
+
+    // Immediate initial sync from server
+    performSync();
+
+    // Auto-sync when guest or admin switches back to the tab
+    const handleFocus = () => {
+      performSync();
+    };
+    window.addEventListener('focus', handleFocus);
+
+    // Live polling every 5 seconds without needing a manual refresh
+    const pollInterval = setInterval(performSync, 5000);
+
+    return () => {
+      isMounted = false;
+      window.removeEventListener('focus', handleFocus);
+      clearInterval(pollInterval);
+    };
   }, []);
 
   const showToast = (msg: string) => {
@@ -268,21 +303,38 @@ export default function App() {
           : 'bg-slate-900 text-slate-200 border-slate-800'
       }`}>
         <div className="max-w-7xl mx-auto w-full flex items-center justify-between gap-4">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {isAdmin ? (
               <>
                 <ShieldCheck className="w-4 h-4 text-emerald-300 shrink-0" />
                 <span>
-                  <strong>Ви увійшли як адміністратор</strong> ({OWNER_EMAIL}). Усі додані сертифікати автоматично публікуються для всіх відвідувачів.
+                  <strong>Ви увійшли як адміністратор</strong> ({OWNER_EMAIL}).
                 </span>
               </>
             ) : (
               <>
                 <Eye className="w-4 h-4 text-amber-400 shrink-0" />
                 <span>
-                  <strong>Режим гостя (Публічний перегляд):</strong> Ви переглядаєте офіційне портфоліо досягнень.
+                  <strong>Режим гостя (Публічний перегляд):</strong> Офіційне портфоліо досягнень.
                 </span>
               </>
+            )}
+
+            {/* Server connection indicator */}
+            {isServerConnected === true && (
+              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] bg-emerald-950/70 text-emerald-200 border border-emerald-500/40 font-medium">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                <span>Сервер онлайн · Автосинхронізація</span>
+              </span>
+            )}
+            {isServerConnected === false && (
+              <span
+                className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] bg-amber-950/80 text-amber-200 border border-amber-500/40 font-medium"
+                title="На Vercel немає сервера — нові додані файли бачите тільки ви. Щоб гості бачили оновлення, використовуйте Render.com!"
+              >
+                <span className="w-2 h-2 rounded-full bg-amber-400"></span>
+                <span>Статичний режим (Vercel)</span>
+              </span>
             )}
           </div>
 

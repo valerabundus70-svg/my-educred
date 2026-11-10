@@ -20,94 +20,97 @@ async function parseJsonResponse(res: Response): Promise<any | null> {
 }
 
 /**
- * Load achievements:
- * 1. Checks IndexedDB and LocalStorage (so user additions NEVER disappear on refresh!)
- * 2. Migrates from older storage keys if present
- * 3. If LocalStorage is empty, checks local Node /api/achievements (if running server.ts)
- * 4. If still empty, checks static /data/achievements.json
- * 5. Fallback to INITIAL_ACHIEVEMENTS
+ * Fetch achievements directly from the backend server with strict anti-caching.
+ * Returns connected: true and the achievements list if the server responded.
  */
-export async function fetchAllAchievements(): Promise<Achievement[]> {
-  // 1a. Check IndexedDB (supports large multi-megabyte files with zero quota limits)
+export async function fetchServerAchievements(): Promise<{
+  connected: boolean;
+  achievements: Achievement[] | null;
+}> {
+  try {
+    const res = await fetch(`/api/achievements?_t=${Date.now()}`, {
+      cache: 'no-store',
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+      },
+    });
+    const data = await parseJsonResponse(res);
+    if (data && data.success && Array.isArray(data.achievements)) {
+      // Sync to local caches in background so offline mode has freshest data
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(data.achievements));
+      } catch (e) {}
+      idbSaveAchievements(data.achievements).catch(() => {});
+      return { connected: true, achievements: data.achievements };
+    }
+  } catch (e) {
+    // Server is unreachable (e.g. offline or static Vercel)
+  }
+  return { connected: false, achievements: null };
+}
+
+/**
+ * Load achievements:
+ * 1. ALWAYS fetches the latest achievements from the server first so all guests see live updates!
+ * 2. If the server is offline (or on static Vercel), falls back to IndexedDB/LocalStorage.
+ * 3. Fallback to static JSON / INITIAL_ACHIEVEMENTS.
+ */
+export async function fetchAllAchievements(): Promise<{
+  items: Achievement[];
+  isServerConnected: boolean;
+}> {
+  // 1. Prioritize real server backend (Render.com / Node)
+  const serverResult = await fetchServerAchievements();
+  if (serverResult.connected && serverResult.achievements !== null) {
+    return { items: serverResult.achievements, isServerConnected: true };
+  }
+
+  // 2. Fallback to IndexedDB (if offline or server unreachable)
   try {
     const idbItems = await idbLoadAchievements();
     if (idbItems && Array.isArray(idbItems) && idbItems.length > 0) {
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(idbItems));
-      } catch (e) {}
-      return idbItems;
+      return { items: idbItems, isServerConnected: false };
     }
   } catch (e) {
     console.warn('IDB load error', e);
   }
 
-  // 1b. Check current LocalStorage key
+  // 3. Fallback to current LocalStorage key
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
       const parsed = JSON.parse(stored);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        idbSaveAchievements(parsed).catch(() => {});
-        return parsed;
+        return { items: parsed, isServerConnected: false };
       }
     }
   } catch (e) {
     console.warn('LocalStorage read error', e);
   }
 
-  // 1b. Check older keys to preserve user items from earlier sessions
-  for (const oldKey of ['educred_achievements_clean_v2', 'educred_achievements_sync_v1']) {
-    try {
-      const oldStored = localStorage.getItem(oldKey);
-      if (oldStored) {
-        const parsed = JSON.parse(oldStored);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
-          return parsed;
-        }
-      }
-    } catch (e) {}
-  }
-
-  // 2. If local Node server is running (AI Studio dev or Cloud Run), fetch from /api
+  // 4. Try static /data/achievements.json
   try {
-    const localRes = await fetch('/api/achievements');
-    const localData = await parseJsonResponse(localRes);
-    if (localData && localData.success && Array.isArray(localData.achievements) && localData.achievements.length > 0) {
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(localData.achievements));
-      } catch (e) {}
-      return localData.achievements;
-    }
-  } catch (e) {
-    // Continue
-  }
-
-  // 3. Try static /data/achievements.json
-  try {
-    const staticRes = await fetch('/data/achievements.json');
+    const staticRes = await fetch(`/data/achievements.json?_t=${Date.now()}`, { cache: 'no-store' });
     const staticData = await parseJsonResponse(staticRes);
     if (Array.isArray(staticData) && staticData.length > 0) {
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(staticData));
-      } catch (e) {}
-      return staticData;
+      return { items: staticData, isServerConnected: false };
     }
   } catch (e) {
     // Continue
   }
 
-  return INITIAL_ACHIEVEMENTS;
+  return { items: INITIAL_ACHIEVEMENTS, isServerConnected: false };
 }
 
 /**
- * Save achievements permanently to LocalStorage and local server
+ * Save achievements permanently to server database and LocalStorage
  */
 export async function saveAllAchievements(
   items: Achievement[],
   passcode: string
 ): Promise<{ success: boolean; mode: 'server' | 'local'; message: string }> {
-  // 1. Save to LocalStorage and IndexedDB immediately so page refresh NEVER loses the items!
+  // 1. Save to LocalStorage and IndexedDB immediately as client-side cache
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
   } catch (e) {
@@ -115,7 +118,7 @@ export async function saveAllAchievements(
   }
   idbSaveAchievements(items).catch(() => {});
 
-  // 2. If local Node server is running, also persist to filesystem
+  // 2. Persist to server filesystem so ALL guests across the internet see the updates!
   try {
     const res = await fetch('/api/achievements', {
       method: 'POST',
@@ -130,7 +133,7 @@ export async function saveAllAchievements(
       return {
         success: true,
         mode: 'server',
-        message: 'Документ надійно збережено в базі портфоліо!',
+        message: '🟢 Опубліковано на сервері! Усі гості бачать цей документ.',
       };
     }
   } catch (e) {
@@ -140,7 +143,7 @@ export async function saveAllAchievements(
   return {
     success: true,
     mode: 'local',
-    message: 'Документ збережено в портфоліо! Залишається після оновлення сторінки.',
+    message: '⚠️ Збережено локально. (На статичному Vercel гості не бачать нові файли — використовуйте Render.com!)',
   };
 }
 

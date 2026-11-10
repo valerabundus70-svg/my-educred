@@ -45,6 +45,8 @@ if (!fs.existsSync(uploadsDir)) {
 }
 
 // Helpers
+let inMemoryAchievements: any[] | null = null;
+
 function getStoredConfig() {
   try {
     if (fs.existsSync(configFile)) {
@@ -56,23 +58,43 @@ function getStoredConfig() {
   return { adminPasscode: 'admin2024', ownerEmail: 'valerabundus70@gmail.com' };
 }
 
-function getStoredAchievements() {
+function getStoredAchievements(): any[] {
+  if (inMemoryAchievements !== null) {
+    return inMemoryAchievements;
+  }
   try {
     if (fs.existsSync(achievementsFile)) {
-      return JSON.parse(fs.readFileSync(achievementsFile, 'utf8'));
+      const content = fs.readFileSync(achievementsFile, 'utf8');
+      const data = JSON.parse(content);
+      if (Array.isArray(data)) {
+        inMemoryAchievements = data;
+        return data;
+      }
     }
     const distDataFile = path.join(distPath, 'data', 'achievements.json');
     if (fs.existsSync(distDataFile)) {
-      return JSON.parse(fs.readFileSync(distDataFile, 'utf8'));
+      const content = fs.readFileSync(distDataFile, 'utf8');
+      const data = JSON.parse(content);
+      if (Array.isArray(data)) {
+        inMemoryAchievements = data;
+        return data;
+      }
     }
   } catch (e) {
     console.error('Error reading achievements.json', e);
   }
+  inMemoryAchievements = [];
   return [];
 }
 
 function saveStoredAchievements(data: any[]) {
-  fs.writeFileSync(achievementsFile, JSON.stringify(data, null, 2), 'utf8');
+  inMemoryAchievements = data;
+  try {
+    fs.writeFileSync(achievementsFile, JSON.stringify(data, null, 2), 'utf8');
+  } catch (e) {
+    console.error('Error writing achievementsFile', e);
+  }
+
   // Also sync to public/data and dist/data
   try {
     const publicDataDir = path.join(publicDir, 'data');
@@ -102,10 +124,25 @@ app.get('/healthz', (req, res) => {
   res.status(200).send('OK');
 });
 
-// 2. GET all achievements (Public - anyone can view!)
+// Status endpoint with server details
+app.get('/api/status', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.json({
+    online: true,
+    platform: 'render-node',
+    uptime: process.uptime(),
+    timestamp: Date.now(),
+  });
+});
+
+// 2. GET all achievements (Public - strictly un-cached so guests immediately see updates!)
 app.get('/api/achievements', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.setHeader('Surrogate-Control', 'no-store');
   const achievements = getStoredAchievements();
-  res.json({ success: true, achievements });
+  res.json({ success: true, achievements, timestamp: Date.now() });
 });
 
 // 3. POST save all achievements (Protected - persists to database)
