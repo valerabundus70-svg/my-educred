@@ -1,0 +1,6 @@
+{
+  "name": "EduCred - Портфоліо Сертифікатів та Досягнень",
+  "description": "Персональний простір для збереження, каталогізації та презентації навчальних сертифікатів, бейджів і дипломів.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
