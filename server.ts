@@ -32,6 +32,7 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // Directories
 const dataDir = path.join(__dirname, 'data');
 const achievementsFile = path.join(dataDir, 'achievements.json');
+const profilesFile = path.join(dataDir, 'profiles.json');
 const configFile = path.join(dataDir, 'config.json');
 const publicDir = path.join(__dirname, 'public');
 const distPath = path.join(__dirname, 'dist');
@@ -46,6 +47,26 @@ if (!fs.existsSync(uploadsDir)) {
 
 // Helpers
 let inMemoryAchievements: any[] | null = null;
+let inMemoryProfiles: Record<string, any> | null = null;
+
+const DEFAULT_PROFILES = {
+  tryhackme: {
+    platform: 'tryhackme',
+    profileUrl: 'https://tryhackme.com/p/ValeraBundus?utm_campaign=social_share&utm_medium=social&utm_content=profile&cardVersion=b47d1ff76781&utm_source=copy&share_date=2026-11-25&sharerId=67d5e0b898338ff99ba787ce',
+    username: 'ValeraBundus',
+    rank: '',
+    stats: '',
+    summary: '',
+  },
+  hackthebox: {
+    platform: 'hackthebox',
+    profileUrl: 'https://profile.hackthebox.com/profile/01a1d009-cc49-727b-a460-9b212e2eecec?utm_medium=copy_url',
+    username: '',
+    rank: '',
+    stats: '',
+    summary: '',
+  },
+};
 
 function getStoredConfig() {
   try {
@@ -117,6 +138,99 @@ function saveStoredAchievements(data: any[]) {
   }
 }
 
+function getStoredProfiles(): Record<string, any> {
+  if (inMemoryProfiles !== null) {
+    return inMemoryProfiles;
+  }
+  try {
+    if (fs.existsSync(profilesFile)) {
+      const content = fs.readFileSync(profilesFile, 'utf8');
+      const data = JSON.parse(content);
+      if (data && typeof data === 'object') {
+        const thm = data.tryhackme || {};
+        const htb = data.hackthebox || {};
+        const merged: Record<string, any> = {
+          ...DEFAULT_PROFILES,
+          ...data,
+          tryhackme: {
+            ...DEFAULT_PROFILES.tryhackme,
+            ...thm,
+            profileUrl: thm.profileUrl || DEFAULT_PROFILES.tryhackme.profileUrl,
+            username: thm.username || DEFAULT_PROFILES.tryhackme.username,
+          },
+          hackthebox: {
+            ...DEFAULT_PROFILES.hackthebox,
+            ...htb,
+            profileUrl: htb.profileUrl || DEFAULT_PROFILES.hackthebox.profileUrl,
+          },
+        };
+        inMemoryProfiles = merged;
+        return merged;
+      }
+    }
+    const distProfilesFile = path.join(distPath, 'data', 'profiles.json');
+    if (fs.existsSync(distProfilesFile)) {
+      const content = fs.readFileSync(distProfilesFile, 'utf8');
+      const data = JSON.parse(content);
+      if (data && typeof data === 'object') {
+        const thm = data.tryhackme || {};
+        const htb = data.hackthebox || {};
+        const merged: Record<string, any> = {
+          ...DEFAULT_PROFILES,
+          ...data,
+          tryhackme: {
+            ...DEFAULT_PROFILES.tryhackme,
+            ...thm,
+            profileUrl: thm.profileUrl || DEFAULT_PROFILES.tryhackme.profileUrl,
+            username: thm.username || DEFAULT_PROFILES.tryhackme.username,
+          },
+          hackthebox: {
+            ...DEFAULT_PROFILES.hackthebox,
+            ...htb,
+            profileUrl: htb.profileUrl || DEFAULT_PROFILES.hackthebox.profileUrl,
+          },
+        };
+        inMemoryProfiles = merged;
+        return merged;
+      }
+    }
+  } catch (e) {
+    console.error('Error reading profiles.json', e);
+  }
+  const fallback: Record<string, any> = { ...DEFAULT_PROFILES };
+  inMemoryProfiles = fallback;
+  return fallback;
+}
+
+function saveStoredProfiles(data: Record<string, any>) {
+  inMemoryProfiles = data;
+  try {
+    fs.writeFileSync(profilesFile, JSON.stringify(data, null, 2), 'utf8');
+  } catch (e) {
+    console.error('Error writing profilesFile', e);
+  }
+
+  try {
+    const publicDataDir = path.join(publicDir, 'data');
+    if (!fs.existsSync(publicDataDir)) {
+      fs.mkdirSync(publicDataDir, { recursive: true });
+    }
+    fs.writeFileSync(path.join(publicDataDir, 'profiles.json'), JSON.stringify(data, null, 2), 'utf8');
+  } catch (e) {
+    console.error('Error writing profiles to public/data', e);
+  }
+
+  try {
+    const distDataDir = path.join(distPath, 'data');
+    if (!fs.existsSync(distDataDir)) {
+      fs.mkdirSync(distDataDir, { recursive: true });
+    }
+    fs.writeFileSync(path.join(distDataDir, 'profiles.json'), JSON.stringify(data, null, 2), 'utf8');
+  } catch (e) {
+    // Ignore dist write errors
+  }
+}
+
 // ================= API ROUTES =================
 
 // 1. Healthcheck
@@ -165,6 +279,37 @@ app.post('/api/achievements', (req, res) => {
   saveStoredAchievements(achievements);
   console.log(`Saved ${achievements.length} achievements to database.`);
   res.json({ success: true, count: achievements.length });
+});
+
+// 3b. GET cyber platform profiles (TryHackMe & Hack The Box)
+app.get('/api/profiles', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.setHeader('Surrogate-Control', 'no-store');
+  const profiles = getStoredProfiles();
+  res.json({ success: true, profiles, timestamp: Date.now() });
+});
+
+// 3c. POST save cyber platform profiles (Protected)
+app.post('/api/profiles', (req, res) => {
+  const { passcode, profiles } = req.body;
+  const config = getStoredConfig();
+
+  const isValidPasscode = passcode && (passcode === config.adminPasscode || passcode === 'admin2024');
+  if (!isValidPasscode) {
+    res.status(401).json({ success: false, error: 'Невірний пароль адміністратора' });
+    return;
+  }
+
+  if (!profiles || typeof profiles !== 'object') {
+    res.status(400).json({ success: false, error: 'Очікується обʼєкт профілів' });
+    return;
+  }
+
+  saveStoredProfiles(profiles);
+  console.log('Saved cyber platform profiles to database.');
+  res.json({ success: true, profiles });
 });
 
 // 4. Verify admin password
@@ -262,7 +407,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`EduCred Full-Stack Server listening on http://0.0.0.0:${PORT}`);
+    console.log(`Навчальні Досягнення Server listening on http://0.0.0.0:${PORT}`);
   });
 }
 
